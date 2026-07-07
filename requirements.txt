@@ -1,0 +1,10 @@
+streamlit>=1.36
+feedparser>=6.0
+requests>=2.32
+beautifulsoup4>=4.12
+scikit-learn>=1.5
+numpy>=1.26
+pandas>=2.2
+python-dotenv>=1.0
+openai>=1.90
+pytest>=8.0
