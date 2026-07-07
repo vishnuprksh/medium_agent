@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import html
+import json
 import os
 import re
 import time
-from typing import Iterable, List, Sequence
+from typing import Any, Iterable, List, Sequence
 from urllib.parse import urlparse, urlunparse
 
 
@@ -179,6 +180,128 @@ def entry_text(entry) -> str:
     return "\n".join(piece for piece in pieces if piece).strip()
 
 
+def medium_post_id(url: str) -> str | None:
+    path = urlparse(url).path
+    match = re.search(r"([0-9a-f]{12})(?:/)?$", path, flags=re.IGNORECASE)
+    return match.group(1).lower() if match else None
+
+
+def _extract_apollo_state(page_html: str) -> dict[str, Any] | None:
+    marker = "window.__APOLLO_STATE__ = "
+    start = page_html.find(marker)
+    if start < 0:
+        return None
+
+    decoder = json.JSONDecoder()
+    try:
+        state, _ = decoder.raw_decode(page_html[start + len(marker) :].lstrip())
+    except json.JSONDecodeError:
+        return None
+
+    return state if isinstance(state, dict) else None
+
+
+def _ref_value(state: dict[str, Any], value: Any) -> Any:
+    if isinstance(value, dict) and isinstance(value.get("__ref"), str):
+        return state.get(value["__ref"])
+    return value
+
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def extract_article_metrics(page_html: str, article_url: str = "") -> dict[str, int | float | None]:
+    """Extract public Medium metrics from an article page when they are embedded."""
+    page_html = html.unescape(page_html)
+    metrics: dict[str, int | float | None] = {
+        "clap_count": None,
+        "response_count": None,
+        "reading_time_minutes": None,
+    }
+
+    state = _extract_apollo_state(page_html)
+    if state:
+        post = None
+        post_id = medium_post_id(article_url)
+        if post_id:
+            post = state.get(f"Post:{post_id}")
+        if not isinstance(post, dict):
+            for value in state.values():
+                if isinstance(value, dict) and value.get("__typename") == "Post" and "clapCount" in value:
+                    post = value
+                    break
+
+        if isinstance(post, dict):
+            metrics["clap_count"] = _int_or_none(post.get("clapCount"))
+            metrics["reading_time_minutes"] = _float_or_none(post.get("readingTime"))
+            responses = _ref_value(state, post.get("postResponses"))
+            if isinstance(responses, dict):
+                metrics["response_count"] = _int_or_none(responses.get("count"))
+
+    if metrics["clap_count"] is None:
+        match = re.search(r'"clapCount"\s*:\s*(\d+)', page_html)
+        if match:
+            metrics["clap_count"] = int(match.group(1))
+    if metrics["response_count"] is None:
+        match = re.search(
+            r'"postResponses"\s*:\s*\{[^{}]*"count"\s*:\s*(\d+)',
+            page_html,
+        )
+        if match:
+            metrics["response_count"] = int(match.group(1))
+    if metrics["reading_time_minutes"] is None:
+        match = re.search(r'"readingTime"\s*:\s*([0-9]+(?:\.[0-9]+)?)', page_html)
+        if match:
+            metrics["reading_time_minutes"] = float(match.group(1))
+
+    return metrics
+
+
+def apply_article_metrics(article: Article, metrics: dict[str, int | float | None]) -> Article:
+    article.clap_count = _int_or_none(metrics.get("clap_count"))
+    article.response_count = _int_or_none(metrics.get("response_count"))
+    article.reading_time_minutes = _float_or_none(metrics.get("reading_time_minutes"))
+    return article
+
+
+def fetch_article_metrics(article_url: str, timeout: int = 10) -> dict[str, int | float | None]:
+    import requests
+
+    user_agent = os.getenv(
+        "APP_USER_AGENT",
+        "MediumAIReader/0.1 (+https://example.com; respectful RSS discovery)",
+    )
+    response = requests.get(article_url, headers={"User-Agent": user_agent}, timeout=timeout)
+    response.raise_for_status()
+    return extract_article_metrics(response.text, article_url=article_url)
+
+
+def enrich_articles_with_metrics(
+    articles: Sequence[Article],
+    timeout: int = 10,
+    pause_seconds: float = 0.15,
+) -> List[str]:
+    errors: List[str] = []
+    for article in articles:
+        try:
+            apply_article_metrics(article, fetch_article_metrics(article.url, timeout=timeout))
+        except Exception as exc:  # noqa: BLE001 - article pages may block or omit metadata.
+            errors.append(f"{article.url}: {exc}")
+        time.sleep(pause_seconds)
+    return errors
+
+
 def fetch_feed(feed_url: str, max_items: int = 25, timeout: int = 15) -> List[Article]:
     import feedparser
     import requests
@@ -224,7 +347,12 @@ def fetch_feed(feed_url: str, max_items: int = 25, timeout: int = 15) -> List[Ar
     return articles
 
 
-def fetch_articles(feed_urls: Iterable[str], max_items_per_feed: int = 20, pause_seconds: float = 0.35) -> tuple[List[Article], List[str]]:
+def fetch_articles(
+    feed_urls: Iterable[str],
+    max_items_per_feed: int = 20,
+    pause_seconds: float = 0.35,
+    include_metrics: bool = False,
+) -> tuple[List[Article], List[str]]:
     seen_urls = set()
     articles: List[Article] = []
     errors: List[str] = []
@@ -241,5 +369,9 @@ def fetch_articles(feed_urls: Iterable[str], max_items_per_feed: int = 20, pause
         except Exception as exc:  # noqa: BLE001 - surface feed-level failures in the app UI.
             errors.append(f"{feed_url}: {exc}")
         time.sleep(pause_seconds)
+
+    if include_metrics:
+        metric_errors = enrich_articles_with_metrics(articles)
+        errors.extend(f"Popularity metadata {error}" for error in metric_errors)
 
     return articles, errors

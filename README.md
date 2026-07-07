@@ -9,14 +9,17 @@ The app uses an agent-style pipeline:
 1. **PreferenceAgent** turns a fuzzy prompt like "I want practical AI agent engineering posts, not hype" into Medium tags and source feeds.
 2. **ExplorerAgent** builds supported Medium RSS URLs for tags, profiles, publications, publication-tag pages, and custom-domain publications.
 3. **FetcherAgent** reads public RSS entries with a respectful user agent and light pacing.
-4. **RankerAgent** scores each article against the user's intent.
+4. Optionally, **PopularityAgent** visits public article pages to extract claps, response counts, and reading time when Medium embeds those fields.
+5. **RankerAgent** scores each article against the user's intent.
    - With `OPENAI_API_KEY`, it uses embeddings.
    - Without a key, it falls back to local TF-IDF ranking.
-5. **CuratorAgent** explains why each article is worth reading.
+6. **CuratorAgent** explains why each article is worth reading.
 
 ## Data source and boundaries
 
 This MVP uses public RSS feeds. It does **not** bypass Medium membership, login, paywalls, robots rules, or private content. Paywalled Medium stories may appear only as truncated RSS previews.
+
+Medium RSS does not include clap counts. The optional popularity filter makes one public page request per unique article and extracts claps, response counts, and reading time from embedded page metadata when available.
 
 Supported feed shapes include:
 
@@ -82,7 +85,7 @@ Clear, beginner-friendly data science articles with real projects and code, not 
 - Add scheduled digest emails.
 - Add a vector database such as SQLite + sqlite-vss, Chroma, or Postgres/pgvector.
 - Add per-user source libraries.
-- Add freshness filters, reading-time filters, author exclusions, and "avoid hype" classifier.
+- Add freshness filters, author exclusions, and "avoid hype" classifier.
 - Add deployment through Streamlit Community Cloud, Render, Fly.io, or a Docker container.
 
 ## Tests

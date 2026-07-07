@@ -141,6 +141,11 @@ class RankerAgent:
             reasons.append("Matches: " + ", ".join(hits[:6]))
         if article.tags:
             reasons.append("Medium tags: " + ", ".join(article.tags[:5]))
+        if article.clap_count is not None:
+            popularity = f"Claps: {article.clap_count:,}"
+            if article.response_count is not None:
+                popularity += f", responses: {article.response_count:,}"
+            reasons.append(popularity)
         if article.published:
             reasons.append("Published: " + article.published)
         return reasons[:3]
@@ -176,6 +181,9 @@ class CuratorAgent:
                     "author": article.author,
                     "published": article.published,
                     "tags": article.tags[:8],
+                    "clap_count": article.clap_count,
+                    "response_count": article.response_count,
+                    "reading_time_minutes": article.reading_time_minutes,
                     "score": round(article.score, 3),
                     "summary": article.summary[:900],
                 }

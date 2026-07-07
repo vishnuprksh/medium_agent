@@ -14,6 +14,9 @@ class Article:
     summary: str = ""
     content: str = ""
     tags: List[str] = field(default_factory=list)
+    clap_count: int | None = None
+    response_count: int | None = None
+    reading_time_minutes: float | None = None
     score: float = 0.0
     relevance: float = 0.0
     recency_score: float = 0.0
