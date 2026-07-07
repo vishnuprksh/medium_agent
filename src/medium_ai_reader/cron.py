@@ -11,6 +11,7 @@ from email.message import EmailMessage
 from typing import Callable, Mapping, Sequence
 
 from .agents import CuratorAgent, DiscoveryPlan, PreferenceAgent, RankerAgent
+from .delivery_history import DeliveryHistory
 from .medium_sources import fetch_articles, split_csv
 from .models import Article
 
@@ -116,32 +117,52 @@ def run_digest(
     fetcher: FetchArticles = fetch_articles,
     email_sender: SendEmail | None = None,
     now: datetime | None = None,
+    delivery_history: DeliveryHistory | None = None,
 ) -> DigestResult:
     config = config or DigestConfig.from_env()
     config.validate()
     email_sender = email_sender or send_digest_email
     generated_at = now or datetime.now(timezone.utc)
 
-    plan, articles, errors = discover_articles(config, fetcher=fetcher)
-    subject = build_subject(config, generated_at, len(articles))
-    text_body = render_text_digest(config, generated_at, plan, articles, errors)
-    html_body = render_html_digest(config, generated_at, plan, articles, errors)
-    result = DigestResult(
-        generated_at=generated_at,
-        plan=plan,
-        articles=tuple(articles),
-        errors=tuple(errors),
-        subject=subject,
-        text_body=text_body,
-        html_body=html_body,
-    )
+    # Initialize delivery history (will be a no-op if no DB configured)
+    history = delivery_history or DeliveryHistory()
+    try:
+        plan, articles, errors = discover_articles(config, fetcher=fetcher)
 
-    if config.dry_run:
-        print(result.text_body)
-    else:
-        email_sender(config, result.subject, result.text_body, result.html_body)
+        # Filter out already-sent articles
+        if articles:
+            original_count = len(articles)
+            articles = history.filter_unsent(articles)
+            if len(articles) < original_count:
+                errors.append(f"Filtered out {original_count - len(articles)} already-sent articles.")
 
-    return result
+        subject = build_subject(config, generated_at, len(articles))
+        text_body = render_text_digest(config, generated_at, plan, articles, errors)
+        html_body = render_html_digest(config, generated_at, plan, articles, errors)
+        result = DigestResult(
+            generated_at=generated_at,
+            plan=plan,
+            articles=tuple(articles),
+            errors=tuple(errors),
+            subject=subject,
+            text_body=text_body,
+            html_body=html_body,
+        )
+
+        if config.dry_run:
+            print(result.text_body)
+            # In dry-run mode, still show what would be recorded
+            if articles:
+                print(f"\n[DRY RUN] Would record {len(articles)} articles as sent.")
+        else:
+            email_sender(config, result.subject, result.text_body, result.html_body)
+            # Record successfully sent articles
+            if articles:
+                history.record_sent(articles)
+
+        return result
+    finally:
+        history.close()
 
 
 def discover_articles(

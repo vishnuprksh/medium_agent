@@ -1,3 +1,8 @@
+databases:
+  - name: medium-ai-reader-db
+    databaseName: digest_history
+    user: digest_user
+
 services:
   - type: cron
     name: medium-ai-reader-digest
@@ -40,3 +45,7 @@ services:
         sync: false
       - key: APP_USER_AGENT
         value: MediumAIReader/0.1 (+mailto:vishnucheppanam@gmail.com; respectful RSS discovery)
+      - key: DIGEST_DB_DSN
+        fromDatabase:
+          name: medium-ai-reader-db
+          property: connectionString
