@@ -17,10 +17,11 @@ from .models import Article
 
 DEFAULT_RECIPIENT = "vishnucheppanam@gmail.com"
 DEFAULT_INTENT = (
-    "Practical, non-hype articles about building useful AI agents with Python "
-    "and product thinking."
+    "Advanced mathematics articles covering linear algebra, calculus, probability theory, "
+    "statistics, optimization, information theory, and mathematical foundations "
+    "for machine learning, artificial intelligence, and data science."
 )
-DEFAULT_TAGS = "artificial-intelligence, ai-agents, python, software-development"
+DEFAULT_TAGS = "mathematics, linear-algebra, calculus, probability, statistics, optimization, machine-learning, artificial-intelligence, data-science, information-theory"
 
 
 class ConfigError(ValueError):

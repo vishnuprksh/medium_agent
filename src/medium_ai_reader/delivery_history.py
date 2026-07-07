@@ -52,6 +52,19 @@ class DeliveryHistory:
             self._conn = psycopg.connect(self.dsn, row_factory=dict_row)
         return self._conn
 
+    @property
+    def is_available(self) -> bool:
+        """Check if the database is configured and accessible."""
+        if not self.dsn:
+            return False
+        try:
+            conn = self._get_conn()
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+            return True
+        except Exception:
+            return False
+
     def init_schema(self) -> None:
         """Create the sent_articles table if it doesn't exist."""
         conn = self._get_conn()
@@ -74,8 +87,12 @@ class DeliveryHistory:
         """Check which URLs have already been sent.
 
         Returns a set of normalized URLs that are already in the database.
+        Returns empty set if database is not available.
         """
         if not urls:
+            return set()
+        
+        if not self.is_available:
             return set()
 
         normalized = [normalize_url(u) for u in urls]
@@ -91,9 +108,13 @@ class DeliveryHistory:
         """Filter out articles that have already been sent.
 
         Returns a new list containing only unsent articles.
+        If database is not available, returns all articles (no filtering).
         """
         if not articles:
             return []
+        
+        if not self.is_available:
+            return list(articles)
 
         urls = [a.url for a in articles]
         sent = self.get_sent_urls(urls)
@@ -104,8 +125,12 @@ class DeliveryHistory:
 
         Inserts normalized URLs into sent_articles table.
         Uses ON CONFLICT DO NOTHING to handle race conditions gracefully.
+        Silently fails if database is not available.
         """
         if not articles:
+            return
+        
+        if not self.is_available:
             return
 
         conn = self._get_conn()
