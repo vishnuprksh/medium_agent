@@ -1,19 +1,20 @@
-# Medium AI Reader Finder
+# Medium AI Reader Daily Digest
 
-A local Streamlit MVP that explores public Medium RSS feeds and recommends the articles that best match a user's reading intent.
+A Render-ready cron job that explores public Medium RSS feeds, ranks the articles that best match a reading intent, and emails a daily digest to `vishnucheppanam@gmail.com`.
 
-## What the app does
+## What the cron job does
 
-The app uses an agent-style pipeline:
+The job uses an agent-style pipeline:
 
 1. **PreferenceAgent** turns a fuzzy prompt like "I want practical AI agent engineering posts, not hype" into Medium tags and source feeds.
 2. **ExplorerAgent** builds supported Medium RSS URLs for tags, profiles, publications, publication-tag pages, and custom-domain publications.
 3. **FetcherAgent** reads public RSS entries with a respectful user agent and light pacing.
 4. Optionally, **PopularityAgent** visits public article pages to extract claps, response counts, and reading time when Medium embeds those fields.
 5. **RankerAgent** scores each article against the user's intent.
-   - With `OPENAI_API_KEY`, it uses embeddings.
+   - With `OPENROUTER_API_KEY`, it uses embeddings.
    - Without a key, it falls back to local TF-IDF ranking.
 6. **CuratorAgent** explains why each article is worth reading.
+7. **Mailer** sends the digest through SMTP.
 
 ## Data source and boundaries
 
@@ -34,33 +35,68 @@ https://custom-domain-publication.com/feed
 ## Quick start
 
 ```bash
-cd medium-ai-reader
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-streamlit run app.py
+python app.py --dry-run
 ```
 
 On Windows PowerShell:
 
 ```powershell
-cd medium-ai-reader
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 copy .env.example .env
-streamlit run app.py
+python app.py --dry-run
 ```
+
+Set SMTP values in `.env`, then run the real email job:
+
+```bash
+python app.py
+```
+
+## Render cron setup
+
+This repository includes `render.yaml` with a daily cron job:
+
+```yaml
+type: cron
+schedule: "0 13 * * *"
+startCommand: "python app.py"
+```
+
+Render evaluates cron schedules in UTC. Add the Blueprint in Render, then fill the unsynced secret values for `SMTP_HOST`, `SMTP_USERNAME`, `SMTP_PASSWORD`, and `SMTP_FROM`. For Gmail, use an app password.
+
+## Configuration
+
+The main environment variables are:
+
+```text
+DIGEST_RECIPIENTS=vishnucheppanam@gmail.com
+DIGEST_INTENT=Practical, non-hype articles about building useful AI agents with Python and product thinking.
+DIGEST_TAGS=artificial-intelligence, ai-agents, python, software-development
+DIGEST_SOURCES=
+DIGEST_TOP_K=8
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USERNAME=
+SMTP_PASSWORD=
+SMTP_FROM=
+```
+
+`DIGEST_SOURCES` can include Medium profiles, publications, or custom-domain publication URLs separated by commas or newlines.
 
 ## Optional AI setup
 
-The app works without an API key. To enable embedding-based matching and AI-generated curation notes, set this in `.env`:
+The cron job works without an API key. To enable embedding-based matching and AI-generated curation notes, set this in `.env`:
 
 ```bash
-OPENAI_API_KEY=your_key_here
-OPENAI_EMBEDDING_MODEL=text-embedding-3-small
-OPENAI_CHAT_MODEL=gpt-5.4-mini
+OPENROUTER_API_KEY=your_key_here
+OPENROUTER_EMBEDDING_MODEL=tencent/hy3:free
+OPENROUTER_CHAT_MODEL=tencent/hy3:free
 ```
 
 You can change model names in `.env` without editing the app code.
@@ -82,14 +118,13 @@ Clear, beginner-friendly data science articles with real projects and code, not 
 ## Next features to add
 
 - Save thumbs-up/thumbs-down feedback and learn a user profile.
-- Add scheduled digest emails.
 - Add a vector database such as SQLite + sqlite-vss, Chroma, or Postgres/pgvector.
 - Add per-user source libraries.
 - Add freshness filters, author exclusions, and "avoid hype" classifier.
-- Add deployment through Streamlit Community Cloud, Render, Fly.io, or a Docker container.
+- Add a delivery history table.
 
 ## Tests
 
 ```bash
-PYTHONPATH=src pytest
+pytest
 ```
