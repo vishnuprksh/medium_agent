@@ -29,6 +29,8 @@ services:
         value: "true"
       - key: DIGEST_INCLUDE_METRICS
         value: "false"
+      - key: DIGEST_REQUIRE_DELIVERY_HISTORY
+        value: "true"
       - key: SMTP_HOST
         sync: false
       - key: SMTP_PORT

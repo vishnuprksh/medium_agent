@@ -9,13 +9,25 @@ from __future__ import annotations
 import os
 import re
 import urllib.parse
-from typing import List, Sequence
+from dataclasses import dataclass
+from typing import Sequence
 
 try:
     import psycopg
-    from psycopg.rows import class_row, dict_row
+    from psycopg.rows import dict_row
 except ImportError:
     psycopg = None
+
+
+class DeliveryHistoryError(RuntimeError):
+    """Raised when delivery history is required but cannot be used."""
+
+
+@dataclass(frozen=True)
+class DeliveryRecordResult:
+    attempted: int
+    inserted: int
+    skipped_existing: int
 
 
 def normalize_url(url: str) -> str:
@@ -35,6 +47,26 @@ def normalize_url(url: str) -> str:
         return url.strip().lower()
 
 
+def article_history_key(url: str) -> str:
+    """Return a stable delivery-history key for an article URL."""
+    try:
+        parsed = urllib.parse.urlparse(url.strip())
+        path = urllib.parse.unquote(parsed.path)
+        match = re.search(r"(?:^|[-/])([0-9a-f]{12})(?:/)?$", path, flags=re.IGNORECASE)
+        if match:
+            return f"medium-post:{match.group(1).lower()}"
+    except Exception:
+        pass
+    return f"url:{normalize_url(url)}"
+
+
+def article_lookup_keys(url: str) -> tuple[str, str]:
+    """Return primary and legacy keys used to find previously sent articles."""
+    primary = article_history_key(url)
+    legacy = normalize_url(url)
+    return primary, legacy
+
+
 class DeliveryHistory:
     """Manages persistent delivery history in PostgreSQL."""
 
@@ -45,9 +77,9 @@ class DeliveryHistory:
     def _get_conn(self):
         """Get or create a database connection."""
         if not psycopg:
-            raise RuntimeError("psycopg not installed. Add 'psycopg[binary]' to requirements.txt")
+            raise DeliveryHistoryError("psycopg not installed. Add 'psycopg[binary]' to requirements.txt")
         if not self.dsn:
-            raise RuntimeError("No database DSN. Set DIGEST_DB_DSN environment variable.")
+            raise DeliveryHistoryError("No database DSN. Set DIGEST_DB_DSN environment variable.")
         if self._conn is None or self._conn.closed:
             self._conn = psycopg.connect(self.dsn, row_factory=dict_row)
         return self._conn
@@ -64,6 +96,27 @@ class DeliveryHistory:
             return True
         except Exception:
             return False
+
+    def prepare(self, *, required: bool = False) -> bool:
+        """Initialize schema and report whether delivery history is active."""
+        if not self.dsn:
+            if required:
+                raise DeliveryHistoryError(
+                    "Delivery history is required, but DIGEST_DB_DSN is not set. "
+                    "Set DIGEST_DB_DSN to a PostgreSQL connection string or set "
+                    "DIGEST_REQUIRE_DELIVERY_HISTORY=false to allow duplicate-prone sends."
+                )
+            return False
+
+        try:
+            self.init_schema()
+        except Exception as exc:
+            self.close()
+            if required:
+                raise DeliveryHistoryError(f"Delivery history database is not available: {exc}") from exc
+            return False
+
+        return True
 
     def init_schema(self) -> None:
         """Create the sent_articles table if it doesn't exist."""
@@ -87,20 +140,20 @@ class DeliveryHistory:
         """Check which URLs have already been sent.
 
         Returns a set of normalized URLs that are already in the database.
-        Returns empty set if database is not available.
+        Returns empty set if database is not configured.
         """
         if not urls:
             return set()
         
-        if not self.is_available:
+        if not self.dsn:
             return set()
 
-        normalized = [normalize_url(u) for u in urls]
+        lookup_keys = sorted({key for url in urls for key in article_lookup_keys(url)})
         conn = self._get_conn()
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT normalized_url FROM sent_articles WHERE normalized_url = ANY(%s)",
-                (normalized,)
+                (lookup_keys,)
             )
             return {row["normalized_url"] for row in cur.fetchall()}
 
@@ -108,42 +161,51 @@ class DeliveryHistory:
         """Filter out articles that have already been sent.
 
         Returns a new list containing only unsent articles.
-        If database is not available, returns all articles (no filtering).
+        If database is not configured, returns all articles (no filtering).
         """
         if not articles:
             return []
         
-        if not self.is_available:
+        if not self.dsn:
             return list(articles)
 
         urls = [a.url for a in articles]
         sent = self.get_sent_urls(urls)
-        return [a for a in articles if normalize_url(a.url) not in sent]
+        return [a for a in articles if not any(key in sent for key in article_lookup_keys(a.url))]
 
-    def record_sent(self, articles: Sequence) -> None:
+    def record_sent(self, articles: Sequence) -> DeliveryRecordResult:
         """Record that articles were sent successfully.
 
         Inserts normalized URLs into sent_articles table.
         Uses ON CONFLICT DO NOTHING to handle race conditions gracefully.
-        Silently fails if database is not available.
+        Returns insert counts for logging.
         """
         if not articles:
-            return
+            return DeliveryRecordResult(attempted=0, inserted=0, skipped_existing=0)
         
-        if not self.is_available:
-            return
+        if not self.dsn:
+            return DeliveryRecordResult(attempted=len(articles), inserted=0, skipped_existing=len(articles))
 
         conn = self._get_conn()
+        inserted = 0
         with conn.cursor() as cur:
             for article in articles:
-                norm_url = normalize_url(article.url)
+                history_key = article_history_key(article.url)
                 cur.execute(
                     """INSERT INTO sent_articles (normalized_url, title)
                        VALUES (%s, %s)
-                       ON CONFLICT (normalized_url) DO NOTHING""",
-                    (norm_url, article.title[:500])  # Truncate title if too long
+                       ON CONFLICT (normalized_url) DO NOTHING
+                       RETURNING id""",
+                    (history_key, article.title[:500])  # Truncate title if too long
                 )
+                if cur.fetchone() is not None:
+                    inserted += 1
             conn.commit()
+        return DeliveryRecordResult(
+            attempted=len(articles),
+            inserted=inserted,
+            skipped_existing=len(articles) - inserted,
+        )
 
     def close(self) -> None:
         """Close the database connection."""

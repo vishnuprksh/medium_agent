@@ -15,6 +15,7 @@ The job uses an agent-style pipeline:
    - Without a key, it falls back to local TF-IDF ranking.
 6. **CuratorAgent** explains why each article is worth reading.
 7. **Mailer** sends the digest through SMTP.
+8. **DeliveryHistory** records sent article keys in PostgreSQL so future cron runs do not resend them.
 
 ## Data source and boundaries
 
@@ -58,6 +59,8 @@ Set SMTP values in `.env`, then run the real email job:
 python app.py
 ```
 
+For local real sends, also set `DIGEST_DB_DSN` or explicitly set `DIGEST_REQUIRE_DELIVERY_HISTORY=false`.
+
 ## Render cron setup
 
 This repository includes `render.yaml` with a daily cron job:
@@ -70,6 +73,8 @@ startCommand: "python app.py"
 
 Render evaluates cron schedules in UTC. Add the Blueprint in Render, then fill the unsynced secret values for `SMTP_HOST`, `SMTP_USERNAME`, `SMTP_PASSWORD`, and `SMTP_FROM`. For Gmail, use an app password.
 
+The Blueprint also creates a PostgreSQL database and injects `DIGEST_DB_DSN` into the cron job. Production sends require delivery history by default (`DIGEST_REQUIRE_DELIVERY_HISTORY=true`), so a missing or unreachable database fails loudly instead of sending duplicate-prone digests.
+
 ## Configuration
 
 The main environment variables are:
@@ -80,6 +85,8 @@ DIGEST_INTENT=Practical, non-hype articles about building useful AI agents with 
 DIGEST_TAGS=artificial-intelligence, ai-agents, python, software-development
 DIGEST_SOURCES=
 DIGEST_TOP_K=8
+DIGEST_DB_DSN=postgresql://...
+DIGEST_REQUIRE_DELIVERY_HISTORY=true
 SMTP_HOST=smtp.gmail.com
 SMTP_PORT=587
 SMTP_USERNAME=
@@ -121,7 +128,6 @@ Clear, beginner-friendly data science articles with real projects and code, not 
 - Add a vector database such as SQLite + sqlite-vss, Chroma, or Postgres/pgvector.
 - Add per-user source libraries.
 - Add freshness filters, author exclusions, and "avoid hype" classifier.
-- Add a delivery history table.
 
 ## Tests
 

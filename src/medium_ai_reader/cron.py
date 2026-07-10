@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import logging
 import os
 import smtplib
 import sys
@@ -11,9 +12,11 @@ from email.message import EmailMessage
 from typing import Callable, Mapping, Sequence
 
 from .agents import CuratorAgent, DiscoveryPlan, PreferenceAgent, RankerAgent
-from .delivery_history import DeliveryHistory
+from .delivery_history import DeliveryHistory, DeliveryHistoryError
 from .medium_sources import fetch_articles, split_csv
 from .models import Article
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_RECIPIENT = "vishnucheppanam@gmail.com"
 DEFAULT_INTENT = (
@@ -49,6 +52,7 @@ class DigestConfig:
     smtp_password: str = ""
     smtp_from: str = ""
     smtp_use_tls: bool = True
+    require_delivery_history: bool = True
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "DigestConfig":
@@ -78,6 +82,7 @@ class DigestConfig:
             smtp_password=env.get("SMTP_PASSWORD", ""),
             smtp_from=env.get("SMTP_FROM", "").strip(),
             smtp_use_tls=_env_bool(env, "SMTP_USE_TLS", True),
+            require_delivery_history=_env_bool(env, "DIGEST_REQUIRE_DELIVERY_HISTORY", True),
         )
 
     @property
@@ -110,6 +115,7 @@ class DigestResult:
 
 FetchArticles = Callable[..., tuple[list[Article], list[str]]]
 SendEmail = Callable[[DigestConfig, str, str, str], None]
+ArticleFilter = Callable[[Sequence[Article]], list[Article]]
 
 
 def run_digest(
@@ -125,17 +131,52 @@ def run_digest(
     email_sender = email_sender or send_digest_email
     generated_at = now or datetime.now(timezone.utc)
 
-    # Initialize delivery history (will be a no-op if no DB configured)
     history = delivery_history or DeliveryHistory()
     try:
-        plan, articles, errors = discover_articles(config, fetcher=fetcher)
+        logger.info(
+            "Digest run starting: recipients=%s top_k=%s max_feeds=%s dry_run=%s",
+            len(config.recipients),
+            config.top_k,
+            config.max_feeds,
+            config.dry_run,
+        )
+        history_active = history.prepare(required=config.require_delivery_history and not config.dry_run)
+        logger.info(
+            "Delivery history status: active=%s required=%s dsn_configured=%s",
+            history_active,
+            config.require_delivery_history and not config.dry_run,
+            bool(getattr(history, "dsn", None)),
+        )
 
-        # Filter out already-sent articles
-        if articles:
-            original_count = len(articles)
-            articles = history.filter_unsent(articles)
-            if len(articles) < original_count:
-                errors.append(f"Filtered out {original_count - len(articles)} already-sent articles.")
+        filter_stats = {"candidates": 0, "already_sent": 0, "available_for_ranking": 0}
+
+        def filter_unsent_candidates(candidates: Sequence[Article]) -> list[Article]:
+            filtered = history.filter_unsent(candidates)
+            filter_stats["candidates"] = len(candidates)
+            filter_stats["already_sent"] = len(candidates) - len(filtered)
+            filter_stats["available_for_ranking"] = len(filtered)
+            return filtered
+
+        plan, articles, errors = discover_articles(
+            config,
+            fetcher=fetcher,
+            article_filter=filter_unsent_candidates,
+        )
+        if filter_stats["candidates"]:
+            logger.info(
+                "Delivery history filter complete: candidates=%s already_sent=%s available_for_ranking=%s",
+                filter_stats["candidates"],
+                filter_stats["already_sent"],
+                filter_stats["available_for_ranking"],
+            )
+        else:
+            logger.info("Delivery history filter skipped: no candidate articles")
+        logger.info(
+            "Article discovery complete: feeds=%s selected=%s warnings=%s",
+            len(plan.feed_urls),
+            len(articles),
+            len(errors),
+        )
 
         subject = build_subject(config, generated_at, len(articles))
         text_body = render_text_digest(config, generated_at, plan, articles, errors)
@@ -155,11 +196,28 @@ def run_digest(
             # In dry-run mode, still show what would be recorded
             if articles:
                 print(f"\n[DRY RUN] Would record {len(articles)} articles as sent.")
+            logger.info("Dry run complete: selected_articles=%s warnings=%s", len(articles), len(errors))
         else:
             email_sender(config, result.subject, result.text_body, result.html_body)
+            logger.info(
+                "Email sent: recipients=%s selected_articles=%s subject=%s",
+                len(config.recipients),
+                len(articles),
+                result.subject,
+            )
             # Record successfully sent articles
             if articles:
-                history.record_sent(articles)
+                record_result = history.record_sent(articles)
+                logger.info(
+                    "Delivery history recorded: attempted=%s inserted=%s already_present=%s",
+                    record_result.attempted,
+                    record_result.inserted,
+                    record_result.skipped_existing,
+                )
+            else:
+                logger.info("Delivery history record skipped: no selected articles")
+
+        logger.info("Digest run finished successfully: selected_articles=%s warnings=%s", len(articles), len(errors))
 
         return result
     finally:
@@ -170,6 +228,7 @@ def discover_articles(
     config: DigestConfig,
     *,
     fetcher: FetchArticles = fetch_articles,
+    article_filter: ArticleFilter | None = None,
 ) -> tuple[DiscoveryPlan, list[Article], list[str]]:
     preference_agent = PreferenceAgent()
     plan = preference_agent.plan(
@@ -195,6 +254,12 @@ def discover_articles(
         articles = filter_by_popularity(articles, config.min_claps, config.min_responses)
         if before_count and not articles:
             errors.append("Popularity filters removed all fetched articles.")
+
+    if article_filter is not None and articles:
+        before_count = len(articles)
+        articles = article_filter(articles)
+        if len(articles) < before_count:
+            errors.append(f"Filtered out {before_count - len(articles)} already-sent articles.")
 
     if not articles:
         return plan, [], errors
@@ -329,6 +394,7 @@ def filter_by_popularity(articles: Sequence[Article], min_claps: int, min_respon
 
 def main(argv: Sequence[str] | None = None) -> int:
     _load_dotenv()
+    _configure_logging()
     parser = argparse.ArgumentParser(description="Send the Medium AI Reader daily email digest.")
     parser.add_argument("--dry-run", action="store_true", help="Print the digest instead of sending email.")
     args = parser.parse_args(argv)
@@ -339,11 +405,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             config = replace(config, dry_run=True)
         result = run_digest(config)
     except ConfigError as exc:
-        print(f"Configuration error: {exc}", file=sys.stderr)
+        logger.error("Configuration error: %s", exc)
         return 2
+    except DeliveryHistoryError as exc:
+        logger.error("Delivery history error: %s", exc)
+        return 2
+    except Exception:
+        logger.exception("Digest run failed unexpectedly")
+        return 1
 
     if not config.dry_run:
-        print(f"Sent {len(result.articles)} articles to {', '.join(config.recipients)}.")
+        logger.info("Sent %s articles to %s.", len(result.articles), ", ".join(config.recipients))
     return 0
 
 
@@ -438,6 +510,15 @@ def _load_dotenv() -> None:
         load_dotenv()
     except Exception:
         pass
+
+
+def _configure_logging() -> None:
+    level_name = os.getenv("LOG_LEVEL", "INFO").strip().upper()
+    level = getattr(logging, level_name, logging.INFO)
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
 
 
 if __name__ == "__main__":

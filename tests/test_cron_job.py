@@ -4,7 +4,29 @@ from datetime import datetime, timezone
 from email.message import EmailMessage
 
 from medium_ai_reader.cron import DigestConfig, DigestResult, run_digest, send_digest_email
+from medium_ai_reader.delivery_history import DeliveryRecordResult, article_history_key, article_lookup_keys
 from medium_ai_reader.models import Article
+
+
+class FakeDeliveryHistory:
+    def __init__(self, sent_urls=()):
+        self.dsn = "postgresql://example"
+        self.sent_urls = set(sent_urls)
+        self.recorded = []
+        self.closed = False
+
+    def prepare(self, *, required=False):
+        return True
+
+    def filter_unsent(self, articles):
+        return [article for article in articles if article.url not in self.sent_urls]
+
+    def record_sent(self, articles):
+        self.recorded.extend(articles)
+        return DeliveryRecordResult(attempted=len(articles), inserted=len(articles), skipped_existing=0)
+
+    def close(self):
+        self.closed = True
 
 
 def make_config(**overrides) -> DigestConfig:
@@ -25,6 +47,7 @@ def make_config(**overrides) -> DigestConfig:
         "smtp_username": "digest@example.com",
         "smtp_password": "secret",
         "smtp_from": "digest@example.com",
+        "require_delivery_history": True,
     }
     values.update(overrides)
     return DigestConfig(**values)
@@ -75,6 +98,7 @@ def test_run_digest_finds_articles_and_sends_email():
         fetcher=fake_fetcher,
         email_sender=fake_sender,
         now=datetime(2026, 7, 7, 13, 0, tzinfo=timezone.utc),
+        delivery_history=FakeDeliveryHistory(),
     )
 
     assert isinstance(result, DigestResult)
@@ -101,6 +125,7 @@ def test_run_digest_sends_no_articles_email_when_fetch_is_empty():
         fetcher=fake_fetcher,
         email_sender=fake_sender,
         now=datetime(2026, 7, 7, 13, 0, tzinfo=timezone.utc),
+        delivery_history=FakeDeliveryHistory(),
     )
 
     assert result.articles == ()
@@ -140,11 +165,51 @@ def test_run_digest_filters_by_popularity_before_sending():
         make_config(include_metrics=True, min_claps=100, min_responses=1),
         fetcher=fake_fetcher,
         email_sender=fake_sender,
+        delivery_history=FakeDeliveryHistory(),
     )
 
     assert [article.title for article in result.articles] == ["Popular Python AI agents article"]
     assert "Popular Python AI agents article" in sent["text_body"]
     assert "Quiet article" not in sent["text_body"]
+
+
+def test_run_digest_filters_already_sent_articles_before_sending():
+    sent = {}
+    history = FakeDeliveryHistory(sent_urls={"https://medium.com/example/old-abc123def456"})
+
+    def fake_fetcher(feed_urls, max_items_per_feed, include_metrics):
+        return [
+            Article(
+                title="Already sent",
+                url="https://medium.com/example/old-abc123def456",
+                source_feed=feed_urls[0],
+                summary="Python AI agents",
+            ),
+            Article(
+                title="Fresh article",
+                url="https://medium.com/example/fresh-abc123def457",
+                source_feed=feed_urls[0],
+                summary="Python AI agents",
+            ),
+        ], []
+
+    def fake_sender(config, subject, text_body, html_body):
+        sent["subject"] = subject
+        sent["text_body"] = text_body
+
+    result = run_digest(
+        make_config(top_k=1),
+        fetcher=fake_fetcher,
+        email_sender=fake_sender,
+        now=datetime(2026, 7, 7, 13, 0, tzinfo=timezone.utc),
+        delivery_history=history,
+    )
+
+    assert [article.title for article in result.articles] == ["Fresh article"]
+    assert sent["subject"] == "Medium AI Daily Digest: 1 article for 2026-07-07"
+    assert "Fresh article" in sent["text_body"]
+    assert "Already sent" not in sent["text_body"]
+    assert [article.title for article in history.recorded] == ["Fresh article"]
 
 
 def test_send_digest_email_uses_configured_smtp(monkeypatch):
@@ -183,3 +248,12 @@ def test_send_digest_email_uses_configured_smtp(monkeypatch):
     assert ("starttls",) in calls
     assert ("login", "digest@example.com", "secret") in calls
     assert calls[-1] == ("send", "vishnucheppanam@gmail.com", "Digest subject", "Plain body\n")
+
+
+def test_article_history_key_uses_medium_post_id_across_url_variants():
+    first = "https://medium.com/@writer/same-story-abc123def456?source=rss"
+    second = "https://publication.example.com/same-story-abc123def456"
+
+    assert article_history_key(first) == "medium-post:abc123def456"
+    assert article_history_key(second) == "medium-post:abc123def456"
+    assert article_lookup_keys(first)[1] == "medium.com/@writer/same-story-abc123def456"
