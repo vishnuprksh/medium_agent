@@ -1,6 +1,12 @@
 .env
+.env.*
+!.env.example
+!.env.firebase.example
 .venv/
 __pycache__/
 .pytest_cache/
-.streamlit/secrets.toml
+.firebase/
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
 *.pyc

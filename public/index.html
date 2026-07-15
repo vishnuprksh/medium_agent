@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Medium AI Reader Daily Digest</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #f7f8fb;
+        color: #18202f;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 32px 18px;
+      }
+
+      main {
+        width: min(720px, 100%);
+        border: 1px solid #d9deea;
+        border-radius: 8px;
+        background: #ffffff;
+        padding: clamp(28px, 6vw, 56px);
+        box-shadow: 0 20px 50px rgba(24, 32, 47, 0.08);
+      }
+
+      .eyebrow {
+        margin: 0 0 12px;
+        color: #52606f;
+        font-size: 0.78rem;
+        font-weight: 700;
+        letter-spacing: 0;
+        text-transform: uppercase;
+      }
+
+      h1 {
+        margin: 0;
+        max-width: 12ch;
+        font-size: clamp(2.1rem, 8vw, 4.5rem);
+        line-height: 0.96;
+        letter-spacing: 0;
+      }
+
+      p {
+        margin: 22px 0 0;
+        max-width: 58ch;
+        color: #3f4a5a;
+        font-size: 1rem;
+        line-height: 1.7;
+      }
+
+      dl {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 14px;
+        margin: 32px 0 0;
+      }
+
+      div.stat {
+        border: 1px solid #e0e4ee;
+        border-radius: 8px;
+        padding: 16px;
+        background: #fbfcff;
+      }
+
+      dt {
+        margin: 0 0 7px;
+        color: #667085;
+        font-size: 0.78rem;
+        font-weight: 700;
+        letter-spacing: 0;
+        text-transform: uppercase;
+      }
+
+      dd {
+        margin: 0;
+        color: #18202f;
+        font-size: 1rem;
+        font-weight: 700;
+        overflow-wrap: anywhere;
+      }
+
+      @media (max-width: 640px) {
+        dl {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <p class="eyebrow">Firebase Hosting</p>
+      <h1>Medium AI Reader</h1>
+      <p>
+        The public hosting endpoint is live. The daily digest runs separately as a
+        Firebase scheduled Python function and stores sent-article history in Firestore.
+      </p>
+      <dl>
+        <div class="stat">
+          <dt>Schedule</dt>
+          <dd>13:00 UTC</dd>
+        </div>
+        <div class="stat">
+          <dt>Runtime</dt>
+          <dd>Python 3.13</dd>
+        </div>
+        <div class="stat">
+          <dt>History</dt>
+          <dd>Firestore</dd>
+        </div>
+      </dl>
+    </main>
+  </body>
+</html>

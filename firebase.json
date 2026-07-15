@@ -1,0 +1,32 @@
+{
+  "hosting": {
+    "public": "public",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ]
+  },
+  "functions": {
+    "source": ".",
+    "runtime": "python313",
+    "ignore": [
+      ".git",
+      ".env",
+      ".env.*",
+      ".venv",
+      "__pycache__",
+      "**/__pycache__/**",
+      ".pytest_cache",
+      "tests/**",
+      "public",
+      "firebase-debug.log",
+      "firestore-debug.log",
+      "ui-debug.log"
+    ]
+  },
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  }
+}

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from email.message import EmailMessage
+from types import SimpleNamespace
 
 from medium_ai_reader.cron import DigestConfig, DigestResult, run_digest, send_digest_email
-from medium_ai_reader.delivery_history import DeliveryRecordResult, article_history_key, article_lookup_keys
+from medium_ai_reader import delivery_history as delivery_history_module
+from medium_ai_reader.delivery_history import DeliveryHistory, DeliveryRecordResult, article_history_key, article_lookup_keys
 from medium_ai_reader.models import Article
 
 
@@ -257,3 +259,79 @@ def test_article_history_key_uses_medium_post_id_across_url_variants():
     assert article_history_key(first) == "medium-post:abc123def456"
     assert article_history_key(second) == "medium-post:abc123def456"
     assert article_lookup_keys(first)[1] == "medium.com/@writer/same-story-abc123def456"
+
+
+def test_delivery_history_records_and_filters_with_firestore(monkeypatch):
+    store = {}
+
+    class FakeSnapshot:
+        def __init__(self, data):
+            self._data = data
+
+        @property
+        def exists(self):
+            return self._data is not None
+
+        def to_dict(self):
+            return dict(self._data) if self._data is not None else None
+
+    class FakeRef:
+        def __init__(self, doc_id):
+            self.doc_id = doc_id
+
+        def get(self):
+            return FakeSnapshot(store.get(self.doc_id))
+
+        def set(self, data):
+            store[self.doc_id] = dict(data)
+
+    class FakeCollection:
+        def document(self, doc_id):
+            return FakeRef(doc_id)
+
+        def limit(self, count):
+            return self
+
+        def get(self):
+            return []
+
+    class FakeClient:
+        def collection(self, name):
+            return FakeCollection()
+
+        def get_all(self, refs):
+            return [ref.get() for ref in refs]
+
+    class FakeFirebaseAdmin:
+        def __init__(self):
+            self._apps = []
+
+        def initialize_app(self):
+            self._apps.append(object())
+
+    fake_admin = FakeFirebaseAdmin()
+    fake_firestore = SimpleNamespace(client=lambda: FakeClient(), SERVER_TIMESTAMP="SERVER_TIMESTAMP")
+    monkeypatch.setattr(delivery_history_module, "firebase_admin", fake_admin)
+    monkeypatch.setattr(delivery_history_module, "firestore", fake_firestore)
+
+    history = DeliveryHistory()
+    old_article = Article(
+        title="Already sent",
+        url="https://medium.com/example/old-abc123def456",
+        source_feed="https://medium.com/feed/tag/python",
+    )
+    new_article = Article(
+        title="Fresh article",
+        url="https://medium.com/example/fresh-abc123def457",
+        source_feed="https://medium.com/feed/tag/python",
+    )
+
+    result = history.record_sent([old_article])
+
+    assert result == DeliveryRecordResult(attempted=1, inserted=1, skipped_existing=0)
+    assert [article.title for article in history.filter_unsent([old_article, new_article])] == ["Fresh article"]
+    assert history.record_sent([old_article]) == DeliveryRecordResult(
+        attempted=1,
+        inserted=0,
+        skipped_existing=1,
+    )

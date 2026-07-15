@@ -1,11 +1,12 @@
-"""Persistent delivery history using PostgreSQL.
+"""Persistent delivery history using Firebase Firestore.
 
-Stores sent article URLs to prevent re-sending across cron job runs.
-Render cron jobs have no persistent disk, so we use a managed Postgres instance.
+Stores sent article URLs to prevent re-sending across scheduled digest runs.
+Firebase Cloud Functions use Firestore through the Firebase Admin SDK.
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import urllib.parse
@@ -13,10 +14,11 @@ from dataclasses import dataclass
 from typing import Sequence
 
 try:
-    import psycopg
-    from psycopg.rows import dict_row
+    import firebase_admin
+    from firebase_admin import firestore
 except ImportError:
-    psycopg = None
+    firebase_admin = None
+    firestore = None
 
 
 class DeliveryHistoryError(RuntimeError):
@@ -38,9 +40,7 @@ def normalize_url(url: str) -> str:
     """
     try:
         parsed = urllib.parse.urlparse(url.strip())
-        # Keep only netloc + path, lowercase
         normalized = (parsed.netloc + parsed.path).lower()
-        # Remove trailing slash
         normalized = re.sub(r"/+$", "", normalized)
         return normalized
     except Exception:
@@ -67,106 +67,91 @@ def article_lookup_keys(url: str) -> tuple[str, str]:
     return primary, legacy
 
 
+def _history_document_id(history_key: str) -> str:
+    """Return a Firestore-safe document ID for an arbitrary history key."""
+    return hashlib.sha256(history_key.encode("utf-8")).hexdigest()
+
+
 class DeliveryHistory:
-    """Manages persistent delivery history in PostgreSQL."""
+    """Manages persistent delivery history in Firestore."""
 
-    def __init__(self, dsn: str | None = None) -> None:
-        self.dsn = dsn or os.getenv("DIGEST_DB_DSN")
-        self._conn = None
+    def __init__(self, collection_name: str | None = None) -> None:
+        self.collection_name = (
+            collection_name
+            or os.getenv("DIGEST_HISTORY_COLLECTION", "").strip()
+            or "sent_articles"
+        )
+        self._client = None
 
-    def _get_conn(self):
-        """Get or create a database connection."""
-        if not psycopg:
-            raise DeliveryHistoryError("psycopg not installed. Add 'psycopg[binary]' to requirements.txt")
-        if not self.dsn:
-            raise DeliveryHistoryError("No database DSN. Set DIGEST_DB_DSN environment variable.")
-        if self._conn is None or self._conn.closed:
-            self._conn = psycopg.connect(self.dsn, row_factory=dict_row)
-        return self._conn
+    def _get_client(self):
+        """Get or create a Firestore client."""
+        if firebase_admin is None or firestore is None:
+            raise DeliveryHistoryError(
+                "firebase-admin is not installed. Add 'firebase-admin' to requirements.txt."
+            )
+        if not firebase_admin._apps:
+            firebase_admin.initialize_app()
+        if self._client is None:
+            self._client = firestore.client()
+        return self._client
+
+    def _collection(self):
+        return self._get_client().collection(self.collection_name)
 
     @property
     def is_available(self) -> bool:
-        """Check if the database is configured and accessible."""
-        if not self.dsn:
-            return False
+        """Check if Firestore is configured and accessible."""
         try:
-            conn = self._get_conn()
-            with conn.cursor() as cur:
-                cur.execute("SELECT 1")
+            self._collection().limit(1).get()
             return True
         except Exception:
             return False
 
     def prepare(self, *, required: bool = False) -> bool:
-        """Initialize schema and report whether delivery history is active."""
-        if not self.dsn:
-            if required:
-                raise DeliveryHistoryError(
-                    "Delivery history is required, but DIGEST_DB_DSN is not set. "
-                    "Set DIGEST_DB_DSN to a PostgreSQL connection string or set "
-                    "DIGEST_REQUIRE_DELIVERY_HISTORY=false to allow duplicate-prone sends."
-                )
-            return False
-
+        """Report whether delivery history is active."""
         try:
-            self.init_schema()
+            self._collection().limit(1).get()
         except Exception as exc:
-            self.close()
             if required:
-                raise DeliveryHistoryError(f"Delivery history database is not available: {exc}") from exc
+                raise DeliveryHistoryError(f"Firestore delivery history is not available: {exc}") from exc
             return False
 
         return True
 
     def init_schema(self) -> None:
-        """Create the sent_articles table if it doesn't exist."""
-        conn = self._get_conn()
-        with conn.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS sent_articles (
-                    id SERIAL PRIMARY KEY,
-                    normalized_url TEXT UNIQUE NOT NULL,
-                    title TEXT,
-                    sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                );
-                CREATE INDEX IF NOT EXISTS idx_sent_articles_url 
-                ON sent_articles(normalized_url);
-                CREATE INDEX IF NOT EXISTS idx_sent_articles_sent_at 
-                ON sent_articles(sent_at DESC);
-            """)
-            conn.commit()
+        """Firestore does not require schema initialization."""
+        self.prepare(required=True)
 
     def get_sent_urls(self, urls: Sequence[str]) -> set[str]:
         """Check which URLs have already been sent.
 
-        Returns a set of normalized URLs that are already in the database.
-        Returns empty set if database is not configured.
+        Returns a set of delivery-history keys that are already in Firestore.
+        Returns empty set if Firestore is not configured.
         """
         if not urls:
             return set()
-        
-        if not self.dsn:
-            return set()
 
         lookup_keys = sorted({key for url in urls for key in article_lookup_keys(url)})
-        conn = self._get_conn()
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT normalized_url FROM sent_articles WHERE normalized_url = ANY(%s)",
-                (lookup_keys,)
-            )
-            return {row["normalized_url"] for row in cur.fetchall()}
+        collection = self._collection()
+        refs = [collection.document(_history_document_id(key)) for key in lookup_keys]
+        snapshots = self._get_client().get_all(refs)
+        sent: set[str] = set()
+        for snapshot in snapshots:
+            data = snapshot.to_dict() if snapshot.exists else None
+            if data and data.get("history_key"):
+                sent.add(data["history_key"])
+        return sent
 
     def filter_unsent(self, articles: Sequence) -> list:
         """Filter out articles that have already been sent.
 
         Returns a new list containing only unsent articles.
-        If database is not configured, returns all articles (no filtering).
+        If Firestore is not configured, returns all articles (no filtering).
         """
         if not articles:
             return []
-        
-        if not self.dsn:
+
+        if not self.is_available:
             return list(articles)
 
         urls = [a.url for a in articles]
@@ -176,31 +161,31 @@ class DeliveryHistory:
     def record_sent(self, articles: Sequence) -> DeliveryRecordResult:
         """Record that articles were sent successfully.
 
-        Inserts normalized URLs into sent_articles table.
-        Uses ON CONFLICT DO NOTHING to handle race conditions gracefully.
+        Inserts delivery-history keys into Firestore.
         Returns insert counts for logging.
         """
         if not articles:
             return DeliveryRecordResult(attempted=0, inserted=0, skipped_existing=0)
-        
-        if not self.dsn:
+
+        if not self.is_available:
             return DeliveryRecordResult(attempted=len(articles), inserted=0, skipped_existing=len(articles))
 
-        conn = self._get_conn()
+        collection = self._collection()
         inserted = 0
-        with conn.cursor() as cur:
-            for article in articles:
-                history_key = article_history_key(article.url)
-                cur.execute(
-                    """INSERT INTO sent_articles (normalized_url, title)
-                       VALUES (%s, %s)
-                       ON CONFLICT (normalized_url) DO NOTHING
-                       RETURNING id""",
-                    (history_key, article.title[:500])  # Truncate title if too long
-                )
-                if cur.fetchone() is not None:
-                    inserted += 1
-            conn.commit()
+        for article in articles:
+            history_key = article_history_key(article.url)
+            ref = collection.document(_history_document_id(history_key))
+            if ref.get().exists:
+                continue
+            ref.set(
+                {
+                    "history_key": history_key,
+                    "url": article.url,
+                    "title": article.title[:500],
+                    "sent_at": firestore.SERVER_TIMESTAMP,
+                }
+            )
+            inserted += 1
         return DeliveryRecordResult(
             attempted=len(articles),
             inserted=inserted,
@@ -208,10 +193,8 @@ class DeliveryHistory:
         )
 
     def close(self) -> None:
-        """Close the database connection."""
-        if self._conn and not self._conn.closed:
-            self._conn.close()
-            self._conn = None
+        """Release the cached Firestore client reference."""
+        self._client = None
 
     def __enter__(self):
         return self

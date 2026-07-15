@@ -5,5 +5,6 @@ scikit-learn>=1.5
 numpy>=1.26
 python-dotenv>=1.0
 openai>=1.90
+firebase-admin>=6.6
+firebase-functions>=0.4
 pytest>=8.0
-psycopg[binary]>=3.1

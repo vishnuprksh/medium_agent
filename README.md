@@ -1,6 +1,6 @@
 # Medium AI Reader Daily Digest
 
-A Render-ready cron job that explores public Medium RSS feeds, ranks the articles that best match a reading intent, and emails a daily digest to `vishnucheppanam@gmail.com`.
+A Firebase-ready scheduled digest that explores public Medium RSS feeds, ranks the articles that best match a reading intent, and emails a daily digest to `vishnucheppanam@gmail.com`.
 
 ## What the cron job does
 
@@ -15,7 +15,7 @@ The job uses an agent-style pipeline:
    - Without a key, it falls back to local TF-IDF ranking.
 6. **CuratorAgent** explains why each article is worth reading.
 7. **Mailer** sends the digest through SMTP.
-8. **DeliveryHistory** records sent article keys in PostgreSQL so future cron runs do not resend them.
+8. **DeliveryHistory** records sent article keys in Firestore so future scheduled runs do not resend them.
 
 ## Data source and boundaries
 
@@ -59,21 +59,22 @@ Set SMTP values in `.env`, then run the real email job:
 python app.py
 ```
 
-For local real sends, also set `DIGEST_DB_DSN` or explicitly set `DIGEST_REQUIRE_DELIVERY_HISTORY=false`.
+For local real sends, use Firebase credentials that can access Firestore or explicitly set `DIGEST_REQUIRE_DELIVERY_HISTORY=false`.
 
-## Render cron setup
+## Firebase Hosting setup
 
-This repository includes `render.yaml` with a daily cron job:
+This repository includes Firebase configuration for Hosting, Firestore, and a scheduled Python Cloud Function:
 
-```yaml
-type: cron
-schedule: "0 13 * * *"
-startCommand: "python app.py"
+```text
+firebase.json
+firestore.rules
+main.py
+public/
 ```
 
-Render evaluates cron schedules in UTC. Add the Blueprint in Render, then fill the unsynced secret values for `SMTP_HOST`, `SMTP_USERNAME`, `SMTP_PASSWORD`, and `SMTP_FROM`. For Gmail, use an app password.
+The default schedule is `0 13 * * *` in UTC. Firebase Hosting serves the static page in `public/`; the digest job itself runs as the `daily_digest` scheduled function and stores delivery history in Firestore.
 
-The Blueprint also creates a PostgreSQL database and injects `DIGEST_DB_DSN` into the cron job. Production sends require delivery history by default (`DIGEST_REQUIRE_DELIVERY_HISTORY=true`), so a missing or unreachable database fails loudly instead of sending duplicate-prone digests.
+For the full deployment walkthrough, see [FIREBASE_HOSTING.md](FIREBASE_HOSTING.md).
 
 ## Configuration
 
@@ -85,8 +86,8 @@ DIGEST_INTENT=Practical, non-hype articles about building useful AI agents with 
 DIGEST_TAGS=artificial-intelligence, ai-agents, python, software-development
 DIGEST_SOURCES=
 DIGEST_TOP_K=8
-DIGEST_DB_DSN=postgresql://...
 DIGEST_REQUIRE_DELIVERY_HISTORY=true
+DIGEST_HISTORY_COLLECTION=sent_articles
 SMTP_HOST=smtp.gmail.com
 SMTP_PORT=587
 SMTP_USERNAME=
