@@ -19,27 +19,27 @@ firebase login
 
 Make sure you have Python 3.10 through 3.13 available locally. The checked-in Firebase config uses the Python 3.13 runtime.
 
-## 2. Create or choose a Firebase project
+## 2. Use your existing Firebase project
 
-Create a project in the Firebase console, then attach this repo to it:
+Find the project ID (not its display name) in the Firebase console under **Project settings**, or list the projects available to your signed-in account:
 
 ```bash
-firebase use --add
+firebase projects:list
 ```
 
-Choose your project and assign it an alias such as `prod`.
+Replace `YOUR_PROJECT_ID` in the commands below with that ID. This guide passes it directly to the Firebase CLI, so no new Firebase project or local project alias is required.
 
-Cloud Functions and scheduled jobs require a Firebase project on the Blaze plan. Create a Firestore database in Native mode from the Firebase console if the project does not already have one.
+Cloud Functions and scheduled jobs require the existing project to be on the Blaze plan. Create a Firestore database in Native mode from the Firebase console if the project does not already have one.
 
 ## 3. Configure non-secret environment variables
 
-Create a project-specific environment file for the alias you chose:
+Create a project-specific environment file using the Firebase project ID:
 
 ```bash
-cp .env.firebase.example .env.prod
+cp .env.firebase.example .env.YOUR_PROJECT_ID
 ```
 
-Edit `.env.prod` and set the digest values you want deployed. Keep secrets out of this file. At minimum, review these values:
+Edit `.env.YOUR_PROJECT_ID` and set the digest values you want deployed. Keep secrets out of this file. At minimum, review these values:
 
 ```text
 DIGEST_RECIPIENTS=you@example.com
@@ -62,9 +62,9 @@ If you want to deploy without OpenRouter, set `DIGEST_USE_OPENROUTER=false` and 
 Set the secrets used by `main.py`:
 
 ```bash
-firebase functions:secrets:set SMTP_USERNAME
-firebase functions:secrets:set SMTP_PASSWORD
-firebase functions:secrets:set OPENROUTER_API_KEY
+firebase functions:secrets:set SMTP_USERNAME --project YOUR_PROJECT_ID
+firebase functions:secrets:set SMTP_PASSWORD --project YOUR_PROJECT_ID
+firebase functions:secrets:set OPENROUTER_API_KEY --project YOUR_PROJECT_ID
 ```
 
 For Gmail SMTP, use a Gmail app password for `SMTP_PASSWORD`.
@@ -74,7 +74,7 @@ For Gmail SMTP, use a Gmail app password for `SMTP_PASSWORD`.
 Deploy everything from the repo root:
 
 ```bash
-firebase deploy --only firestore:rules,functions,hosting
+firebase deploy --project YOUR_PROJECT_ID --only firestore:rules,functions,hosting
 ```
 
 The first Functions deploy can take several minutes because Firebase builds the Python runtime and installs `requirements.txt`.
@@ -91,7 +91,7 @@ https://PROJECT_ID.firebaseapp.com/
 Check the scheduled function logs:
 
 ```bash
-firebase functions:log --only daily_digest
+firebase functions:log --project YOUR_PROJECT_ID --only daily_digest
 ```
 
 To run the digest immediately, open Google Cloud Scheduler for the same project and manually trigger the job named like:
@@ -115,7 +115,7 @@ The schedule lives in `main.py`:
 Edit the cron expression or timezone, then redeploy:
 
 ```bash
-firebase deploy --only functions
+firebase deploy --project YOUR_PROJECT_ID --only functions
 ```
 
 ## 8. Optional custom domain
